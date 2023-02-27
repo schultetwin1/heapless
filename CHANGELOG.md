@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- Fixed LLSC probe on AArc64 causing `pool` module to mistakenly be included in crate
+
 ### Removed
 
 - [breaking-change] this crate no longer has a Minimum Supported Rust Version (MSRV) guarantee and
