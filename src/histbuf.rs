@@ -257,6 +257,30 @@ impl<T, const N: usize> HistoryBuffer<T, N> {
     pub fn oldest_ordered<'a>(&'a self) -> OldestOrdered<'a, T, N> {
         OldestOrdered { buf: self, cur: 0 }
     }
+
+    /// Returns a helper for iterating backwards and forwards over the history
+    /// buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use heapless::HistoryBuffer;
+    ///
+    /// let mut buffer: HistoryBuffer<u8, 6> = HistoryBuffer::new();
+    /// buffer.extend([0, 0, 0, 1, 2, 3, 4, 5, 6]);
+    /// let mut ordered = buffer.ordered();
+    /// assert_eq!(ordered.prev(), Some(&6u8));
+    /// assert_eq!(ordered.prev(), Some(&5u8));
+    /// assert_eq!(ordered.next(), Some(&6u8));
+    /// assert_eq!(ordered.next(), None);
+    ///
+    /// ```
+    pub fn ordered<'a>(&'a self) -> Ordered<'a, T, N> {
+        Ordered {
+            buf: self,
+            cur: Some(self.len()),
+        }
+    }
 }
 
 impl<T, const N: usize> Extend<T> for HistoryBuffer<T, N> {
@@ -363,6 +387,44 @@ impl<'a, T, const N: usize> Iterator for OldestOrdered<'a, T, N> {
             self.cur += 1;
         }
         ret
+    }
+}
+
+/// An "iterator" like struct which also us to move backwards and forwards over
+/// the history buffer in historical order
+pub struct Ordered<'a, T, const N: usize> {
+    buf: &'a HistoryBuffer<T, N>,
+    // The current position in historical order. Value is None if we are past
+    // the oldest element in the buffer. Value is buf.len() if we are past to
+    // newest element in the buffer
+    cur: Option<usize>,
+}
+
+impl<'a, T, const N: usize> Ordered<'a, T, N> {
+    // Returns a references to the next newer item in the history buffer
+    pub fn next(&mut self) -> Option<&'a T> {
+        let cur = if let Some(cur) = self.cur {
+            core::cmp::min(self.buf.len(), cur.saturating_add(1))
+        } else {
+            0usize
+        };
+
+        self.cur = Some(cur);
+
+        self.buf.ordered_get(cur)
+    }
+
+    // Returns a references to the next oldest item in the history buffer
+    pub fn prev(&mut self) -> Option<&'a T> {
+        self.cur = match self.cur {
+            Some(0) | None => None,
+            Some(n) => Some(n - 1),
+        };
+
+        match self.cur {
+            Some(cur) => self.buf.ordered_get(cur),
+            None => None,
+        }
     }
 }
 
@@ -527,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn ordered() {
+    fn oldest_ordered() {
         // test on an empty buffer
         let buffer: HistoryBuffer<u8, 6> = HistoryBuffer::new();
         let mut iter = buffer.oldest_ordered();
@@ -605,5 +667,117 @@ mod tests {
                 y.iter().collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn ordered_empty() {
+        let x: HistoryBuffer<u8, 3> = HistoryBuffer::new();
+        let mut iter = x.ordered();
+        assert!(iter.prev().is_none());
+        assert!(iter.prev().is_none());
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn ordered_one_element() {
+        let mut x: HistoryBuffer<u8, 3> = HistoryBuffer::new();
+        x.write(1u8);
+        let mut iter = x.ordered();
+        assert_eq!(iter.prev(), Some(&1u8));
+        assert!(iter.prev().is_none());
+        assert_eq!(iter.next(), Some(&1u8));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn ordered_single_element() {
+        let mut x: HistoryBuffer<u8, 1> = HistoryBuffer::new();
+        x.write(1u8);
+        let mut iter = x.ordered();
+        assert_eq!(iter.prev(), Some(&1u8));
+        assert!(iter.prev().is_none());
+        assert!(iter.prev().is_none());
+        assert_eq!(iter.next(), Some(&1u8));
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+        assert_eq!(iter.prev(), Some(&1u8));
+        assert!(iter.prev().is_none());
+        assert_eq!(iter.next(), Some(&1u8));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn ordered_two_elements() {
+        let mut x: HistoryBuffer<u8, 3> = HistoryBuffer::new();
+        x.write(1u8);
+        x.write(2u8);
+        let mut iter = x.ordered();
+        assert_eq!(iter.prev(), Some(&2u8));
+        assert_eq!(iter.prev(), Some(&1u8));
+        assert!(iter.prev().is_none());
+        assert_eq!(iter.next(), Some(&1u8));
+        assert_eq!(iter.next(), Some(&2u8));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn ordered_wrap_elements() {
+        let mut buffer: HistoryBuffer<u8, 3> = HistoryBuffer::new();
+        buffer.extend([1, 2, 3, 4]);
+        let mut iter = buffer.ordered();
+        assert_eq!(iter.prev(), Some(&4u8));
+        assert_eq!(iter.prev(), Some(&3u8));
+        assert_eq!(iter.prev(), Some(&2u8));
+        assert!(iter.prev().is_none());
+        assert_eq!(iter.next(), Some(&2u8));
+        assert_eq!(iter.next(), Some(&3u8));
+        assert_eq!(iter.next(), Some(&4u8));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn ordered_prev_next() {
+        let mut buffer: HistoryBuffer<u8, 6> = HistoryBuffer::new();
+        buffer.extend([1, 2]);
+        let mut ordered = buffer.ordered();
+        assert_eq!(ordered.prev(), Some(&2u8));
+        assert_eq!(ordered.next(), None);
+    }
+
+    #[test]
+    fn ordered_full() {
+        let mut buffer: HistoryBuffer<u8, 6> = HistoryBuffer::new();
+        buffer.extend([1, 2, 3, 4, 5, 6]);
+        let mut ordered = buffer.ordered();
+        assert_eq!(ordered.prev(), Some(&6u8));
+        assert_eq!(ordered.prev(), Some(&5u8));
+        assert_eq!(ordered.prev(), Some(&4u8));
+        assert_eq!(ordered.prev(), Some(&3u8));
+        assert_eq!(ordered.prev(), Some(&2u8));
+        assert_eq!(ordered.prev(), Some(&1u8));
+        assert_eq!(ordered.next(), Some(&2u8));
+        assert_eq!(ordered.next(), Some(&3u8));
+        assert_eq!(ordered.next(), Some(&4u8));
+        assert_eq!(ordered.next(), Some(&5u8));
+        assert_eq!(ordered.next(), Some(&6u8));
+        assert_eq!(ordered.next(), None);
+    }
+
+    #[test]
+    fn ordered_toggle() {
+        let mut buffer: HistoryBuffer<u8, 6> = HistoryBuffer::new();
+        buffer.extend([1, 2, 3, 4, 5, 6]);
+        let mut ordered = buffer.ordered();
+        assert_eq!(ordered.prev(), Some(&6u8));
+        assert_eq!(ordered.next(), None);
+        assert_eq!(ordered.prev(), Some(&6u8));
+        assert_eq!(ordered.next(), None);
+        assert_eq!(ordered.prev(), Some(&6u8));
+
+        assert_eq!(ordered.prev(), Some(&5u8));
+        assert_eq!(ordered.next(), Some(&6u8));
+        assert_eq!(ordered.prev(), Some(&5u8));
+        assert_eq!(ordered.next(), Some(&6u8));
     }
 }
